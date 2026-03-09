@@ -6,11 +6,41 @@ import type {
   YandexTrack,
   YandexTrackResponse,
   YandexAccountStatusResponse,
+  YandexContext,
   YandexContextsResponse,
   TrackInfo,
 } from "./types";
 
 const YANDEX_API_BASE = "https://api.music.yandex.net";
+
+/**
+ * Find the most recently played track across all contexts by parsing timestamps
+ * as Date objects. String comparison of ISO 8601 timestamps with different timezone
+ * offsets (e.g. "+03:00" vs "+00:00") is incorrect; Date.parse handles this properly.
+ */
+export function findLatestTrackFromContexts(
+  contexts: YandexContext[]
+): { trackId: number; albumId?: number; timestamp: string } | null {
+  let latestTime = 0;
+  let result: { trackId: number; albumId?: number; timestamp: string } | null = null;
+
+  for (const ctx of contexts) {
+    for (const t of ctx.tracks) {
+      const trackTime = new Date(t.timestamp).getTime();
+      if (Number.isNaN(trackTime)) continue;
+      if (trackTime > latestTime) {
+        latestTime = trackTime;
+        result = {
+          trackId: t.trackId.id,
+          albumId: t.trackId.albumId,
+          timestamp: t.timestamp,
+        };
+      }
+    }
+  }
+
+  return result;
+}
 
 /**
  * Yandex Music API client.
@@ -127,20 +157,14 @@ export class YandexMusicClient {
         return null;
       }
 
-      // Find the track with the most recent timestamp across all contexts
-      let latestTimestamp = "";
-      let latestTrackId: number | null = null;
-      let latestAlbumId: number | undefined;
+      // Find the track with the most recent timestamp across all contexts.
+      // Timestamps are parsed as Date objects to correctly handle different timezone offsets
+      // (string comparison of ISO 8601 timestamps with varying offsets gives wrong results).
+      const latest = findLatestTrackFromContexts(contexts);
 
-      for (const ctx of contexts) {
-        for (const t of ctx.tracks) {
-          if (t.timestamp > latestTimestamp) {
-            latestTimestamp = t.timestamp;
-            latestTrackId = t.trackId.id;
-            latestAlbumId = t.trackId.albumId;
-          }
-        }
-      }
+      const latestTimestamp = latest?.timestamp ?? "";
+      const latestTrackId = latest?.trackId ?? null;
+      const latestAlbumId = latest?.albumId;
 
       if (latestTrackId === null) {
         logger.debug("No tracks found in contexts");
