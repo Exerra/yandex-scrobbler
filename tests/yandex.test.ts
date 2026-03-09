@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { findLatestTrackFromContexts } from "../src/yandex";
-import type { YandexContext } from "../src/types";
+import { findLatestTrackFromContexts, sortQueuesByModified } from "../src/yandex";
+import type { YandexContext, YandexQueueItem } from "../src/types";
 
 describe("findLatestTrackFromContexts", () => {
   test("returns null for empty contexts", () => {
@@ -147,5 +147,45 @@ describe("findLatestTrackFromContexts", () => {
     ];
     const result = findLatestTrackFromContexts(contexts);
     expect(result!.trackId).toBe(100);
+  });
+});
+
+describe("sortQueuesByModified", () => {
+  test("returns empty array for empty input", () => {
+    expect(sortQueuesByModified([])).toEqual([]);
+  });
+
+  test("sorts queues by modified timestamp, newest first", () => {
+    const queues: YandexQueueItem[] = [
+      { id: "old", modified: "2026-03-09T20:00:00+00:00" },
+      { id: "newest", modified: "2026-03-09T22:00:00+00:00" },
+      { id: "middle", modified: "2026-03-09T21:00:00+00:00" },
+    ];
+    const sorted = sortQueuesByModified(queues);
+    expect(sorted[0]!.id).toBe("newest");
+    expect(sorted[1]!.id).toBe("middle");
+    expect(sorted[2]!.id).toBe("old");
+  });
+
+  test("handles different timezone offsets correctly", () => {
+    const queues: YandexQueueItem[] = [
+      // 2026-03-10T01:00:00+03:00 = 22:00 UTC
+      { id: "earlier-utc", modified: "2026-03-10T01:00:00+03:00" },
+      // 2026-03-09T22:30:00+00:00 = 22:30 UTC
+      { id: "later-utc", modified: "2026-03-09T22:30:00+00:00" },
+    ];
+    const sorted = sortQueuesByModified(queues);
+    expect(sorted[0]!.id).toBe("later-utc");
+    expect(sorted[1]!.id).toBe("earlier-utc");
+  });
+
+  test("does not mutate the original array", () => {
+    const queues: YandexQueueItem[] = [
+      { id: "b", modified: "2026-03-09T22:00:00+00:00" },
+      { id: "a", modified: "2026-03-09T20:00:00+00:00" },
+    ];
+    const sorted = sortQueuesByModified(queues);
+    expect(queues[0]!.id).toBe("b"); // original unchanged
+    expect(sorted[0]!.id).toBe("b"); // sorted correctly
   });
 });

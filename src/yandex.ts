@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { logger } from "./logger";
 import type {
   YandexQueueItem,
@@ -43,6 +44,18 @@ export function findLatestTrackFromContexts(
 }
 
 /**
+ * Sort queue items by their `modified` timestamp, newest first.
+ * Uses Date parsing for correct chronological ordering across timezone offsets.
+ */
+export function sortQueuesByModified(queues: YandexQueueItem[]): YandexQueueItem[] {
+  return [...queues].sort((a, b) => {
+    const ta = new Date(a.modified).getTime();
+    const tb = new Date(b.modified).getTime();
+    return tb - ta;
+  });
+}
+
+/**
  * Yandex Music API client.
  * Uses the unofficial API to fetch the user's play queue and track metadata.
  */
@@ -53,10 +66,15 @@ export class YandexMusicClient {
 
   constructor(token: string) {
     this.token = token;
-    // The X-Yandex-Music-Device header is required for queue endpoints
+    // The X-Yandex-Music-Device header is required for queue endpoints.
+    // Use random UUIDs for device_id and uuid so the API treats this as a
+    // real device — hardcoded "unknown" values caused the queue endpoint
+    // to return only queues created by this fake device (i.e. none).
+    const deviceId = randomUUID();
+    const uuid = randomUUID();
     this.deviceHeader =
-      "os=unknown; os_version=unknown; manufacturer=unknown; " +
-      "model=unknown; clid=; device_id=unknown; uuid=unknown";
+      `os=Linux; os_version=1; manufacturer=Scrobbler; ` +
+      `model=Yandex-Scrobbler; clid=; device_id=${deviceId}; uuid=${uuid}`;
   }
 
   private headers(): Record<string, string> {
@@ -141,7 +159,10 @@ export class YandexMusicClient {
   async getRecentlyPlayed(): Promise<TrackInfo | null> {
     try {
       const uid = await this.getAccountUid();
-      const url = `${YANDEX_API_BASE}/users/${uid}/contexts?trackCount=1&types=album,artist,playlist,radio&contextCount=30`;
+      // Don't filter by types — different listening modes (album, track page,
+      // search, collection, radio, etc.) create different context types.
+      // Filtering to specific types caused tracks to be missed entirely.
+      const url = `${YANDEX_API_BASE}/users/${uid}/contexts?trackCount=1&contextCount=30`;
       const res = await fetch(url, { headers: this.headers() });
 
       if (!res.ok) {
@@ -156,6 +177,8 @@ export class YandexMusicClient {
         logger.debug("No recent play contexts found");
         return null;
       }
+
+      logger.debug(`Found ${contexts.length} contexts: ${contexts.map(c => `${c.context}(${c.contextItem})`).join(", ")}`);
 
       // Find the track with the most recent timestamp across all contexts.
       // Timestamps are parsed as Date objects to correctly handle different timezone offsets
@@ -202,8 +225,13 @@ export class YandexMusicClient {
         return null;
       }
 
-      // Use the most recently modified queue
-      const latestQueue = queues[0]!;
+      // Sort queues by modified timestamp (newest first) to ensure we
+      // pick the most recently active queue, regardless of API ordering.
+      const sorted = sortQueuesByModified(queues);
+
+      logger.debug(`Found ${sorted.length} queue(s), most recent modified: ${sorted[0]!.modified}`);
+
+      const latestQueue = sorted[0]!;
       const queue = await this.getQueue(latestQueue.id);
 
       if (!queue || !queue.tracks || queue.tracks.length === 0) {
