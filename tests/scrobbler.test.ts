@@ -48,6 +48,26 @@ describe("isSameTrack", () => {
     const trackA2 = { ...trackA, title: "Different Title" };
     expect(isSameTrack(trackA, trackA2)).toBe(false);
   });
+
+  test("uses playedAt timestamp to compare history-based tracks", () => {
+    const histTrack1: TrackInfo = { ...trackA, playedAt: "2026-03-09T15:00:00+00:00" };
+    const histTrack2: TrackInfo = { ...trackA, playedAt: "2026-03-09T16:00:00+00:00" };
+    // Same track metadata but different playedAt → different play event
+    expect(isSameTrack(histTrack1, histTrack2)).toBe(false);
+  });
+
+  test("returns true for history tracks with same playedAt", () => {
+    const histTrack1: TrackInfo = { ...trackA, playedAt: "2026-03-09T15:00:00+00:00" };
+    const histTrack2: TrackInfo = { ...trackA, playedAt: "2026-03-09T15:00:00+00:00" };
+    expect(isSameTrack(histTrack1, histTrack2)).toBe(true);
+  });
+
+  test("falls back to metadata comparison when no playedAt", () => {
+    // Queue-based tracks (no playedAt) compare by metadata
+    const queueTrack1: TrackInfo = { ...trackA };
+    const queueTrack2: TrackInfo = { ...trackA };
+    expect(isSameTrack(queueTrack1, queueTrack2)).toBe(true);
+  });
 });
 
 describe("shouldScrobble", () => {

@@ -5,10 +5,17 @@ import type { TrackInfo, ScrobblerConfig } from "./types";
 
 /**
  * Determines if two TrackInfo objects represent the same track.
+ * When tracks have playedAt timestamps (from history), compare those too.
  */
 export function isSameTrack(a: TrackInfo | null, b: TrackInfo | null): boolean {
   if (a === null && b === null) return true;
   if (a === null || b === null) return false;
+
+  // If both have playedAt (from history), a different timestamp means a different play event
+  if (a.playedAt && b.playedAt) {
+    return a.playedAt === b.playedAt;
+  }
+
   return a.artist === b.artist && a.title === b.title && a.durationMs === b.durationMs;
 }
 
@@ -78,17 +85,20 @@ export class Scrobbler {
       const currentTrack = await this.yandex.getCurrentTrack();
 
       if (!isSameTrack(currentTrack, this.state.lastTrack)) {
-        // Track changed — scrobble the previous track if eligible
+        // Track changed — handle the transition
         await this.handleTrackChange(currentTrack);
       } else if (currentTrack && !this.state.scrobbled) {
         // Same track still playing — check if we should scrobble it now
-        const elapsed = Date.now() - this.state.lastTrackStartTime;
-        if (shouldScrobble(currentTrack.durationMs, elapsed)) {
-          try {
-            await this.lastfm.scrobble(currentTrack, Math.floor(this.state.lastTrackStartTime / 1000));
-            this.state.scrobbled = true;
-          } catch (err) {
-            logger.error("Failed to scrobble:", (err as Error).message);
+        // Only do elapsed-time scrobbling for queue-based detection (no playedAt)
+        if (!currentTrack.playedAt) {
+          const elapsed = Date.now() - this.state.lastTrackStartTime;
+          if (shouldScrobble(currentTrack.durationMs, elapsed)) {
+            try {
+              await this.lastfm.scrobble(currentTrack, Math.floor(this.state.lastTrackStartTime / 1000));
+              this.state.scrobbled = true;
+            } catch (err) {
+              logger.error("Failed to scrobble:", (err as Error).message);
+            }
           }
         }
       }
@@ -102,19 +112,31 @@ export class Scrobbler {
     const prevStartTime = this.state.lastTrackStartTime;
 
     // Scrobble the previous track if it hasn't been scrobbled yet
+    // For queue-based tracks, check elapsed time; for history-based, always scrobble
     if (prevTrack && !this.state.scrobbled) {
-      const elapsed = Date.now() - prevStartTime;
-      if (shouldScrobble(prevTrack.durationMs, elapsed)) {
+      if (prevTrack.playedAt) {
+        // History-based track: the play is already completed, scrobble it
+        const timestamp = Math.floor(new Date(prevTrack.playedAt).getTime() / 1000);
         try {
-          await this.lastfm.scrobble(prevTrack, Math.floor(prevStartTime / 1000));
+          await this.lastfm.scrobble(prevTrack, timestamp);
         } catch (err) {
           logger.error("Failed to scrobble previous track:", (err as Error).message);
         }
       } else {
-        logger.debug(
-          `Skipped scrobble for "${prevTrack.artist} - ${prevTrack.title}" ` +
-            `(played ${Math.round(elapsed / 1000)}s)`
-        );
+        // Queue-based track: check elapsed time
+        const elapsed = Date.now() - prevStartTime;
+        if (shouldScrobble(prevTrack.durationMs, elapsed)) {
+          try {
+            await this.lastfm.scrobble(prevTrack, Math.floor(prevStartTime / 1000));
+          } catch (err) {
+            logger.error("Failed to scrobble previous track:", (err as Error).message);
+          }
+        } else {
+          logger.debug(
+            `Skipped scrobble for "${prevTrack.artist} - ${prevTrack.title}" ` +
+              `(played ${Math.round(elapsed / 1000)}s)`
+          );
+        }
       }
     }
 
@@ -125,7 +147,19 @@ export class Scrobbler {
     this.state.nowPlayingUpdated = false;
 
     if (newTrack) {
-      logger.info(`♫ Now playing: ${newTrack.artist} - ${newTrack.title}`);
+      const source = newTrack.playedAt ? "history" : "queue";
+      logger.info(`♫ Now playing (${source}): ${newTrack.artist} - ${newTrack.title}`);
+
+      // For history-based tracks, scrobble immediately since they represent completed plays
+      if (newTrack.playedAt) {
+        const timestamp = Math.floor(new Date(newTrack.playedAt).getTime() / 1000);
+        try {
+          await this.lastfm.scrobble(newTrack, timestamp);
+          this.state.scrobbled = true;
+        } catch (err) {
+          logger.error("Failed to scrobble:", (err as Error).message);
+        }
+      }
 
       // Update Now Playing on Last.fm
       try {

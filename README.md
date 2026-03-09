@@ -128,10 +128,13 @@ bunx pm2 startup
 
 ## How It Works
 
-1. The scrobbler polls the Yandex Music API every 15 seconds (configurable) to check your current play queue
-2. When a new track is detected, it updates your Last.fm "Now Playing" status
-3. A track is scrobbled when it has been listened to for at least half its duration or 4 minutes (whichever comes first), with a minimum of 30 seconds — following [Last.fm's scrobbling rules](https://www.last.fm/api/scrobbling)
-4. If the track changes before the scrobble threshold, the previous track is scrobbled if it meets the criteria
+1. The scrobbler polls the Yandex Music API every 15 seconds (configurable)
+2. It uses two detection methods:
+   - **Queue-based** (primary): Checks your active play queue for real-time "now playing" detection
+   - **History-based** (fallback): Uses the "recently played" contexts endpoint to detect tracks when no active queue exists (e.g., when the music app syncs play history but has no active session)
+3. When a new track is detected, it updates your Last.fm "Now Playing" status
+4. For queue-based detection: a track is scrobbled when listened to for at least half its duration or 4 minutes (whichever comes first), with a minimum of 30 seconds — following [Last.fm's scrobbling rules](https://www.last.fm/api/scrobbling)
+5. For history-based detection: tracks are scrobbled immediately when detected as new plays (using timestamps to avoid duplicates)
 
 ## Testing
 

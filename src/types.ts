@@ -63,6 +63,43 @@ export interface YandexTrackResponse {
   result: YandexTrack[];
 }
 
+/** Yandex Account Status types */
+
+export interface YandexAccountStatusResponse {
+  invocationInfo: Record<string, string>;
+  result: {
+    account: {
+      uid: number;
+      login: string;
+      displayName?: string;
+    };
+  };
+}
+
+/** Yandex Recently Played (contexts) types */
+
+export interface YandexContextTrack {
+  trackId: {
+    id: number;
+    albumId?: number;
+  };
+  timestamp: string;
+}
+
+export interface YandexContext {
+  client: string;
+  context: string;
+  contextItem: number | string;
+  tracks: YandexContextTrack[];
+}
+
+export interface YandexContextsResponse {
+  invocationInfo: Record<string, string>;
+  result: {
+    contexts: YandexContext[];
+  };
+}
+
 /** Last.fm API types */
 
 export interface LastfmSession {
@@ -98,6 +135,8 @@ export interface TrackInfo {
   title: string;
   album: string;
   durationMs: number;
+  /** ISO timestamp of when the track was played (from history). Absent for queue-based detection. */
+  playedAt?: string;
 }
 
 export interface ScrobblerConfig {
