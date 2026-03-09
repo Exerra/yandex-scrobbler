@@ -111,7 +111,7 @@ export class YandexMusicClient {
   async getRecentlyPlayed(): Promise<TrackInfo | null> {
     try {
       const uid = await this.getAccountUid();
-      const url = `${YANDEX_API_BASE}/users/${uid}/contexts?trackCount=1&types=album,artist,playlist&contextCount=30`;
+      const url = `${YANDEX_API_BASE}/users/${uid}/contexts?trackCount=1&types=album,artist,playlist,radio&contextCount=30`;
       const res = await fetch(url, { headers: this.headers() });
 
       if (!res.ok) {
