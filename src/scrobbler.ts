@@ -147,11 +147,10 @@ export class Scrobbler {
     this.state.nowPlayingUpdated = false;
 
     if (newTrack) {
-      const source = newTrack.playedAt ? "history" : "queue";
-      logger.info(`♫ Now playing (${source}): ${newTrack.artist} - ${newTrack.title}`);
-
-      // For history-based tracks, scrobble immediately since they represent completed plays
       if (newTrack.playedAt) {
+        // History-based track: scrobble immediately since it represents a completed play.
+        // Do NOT call updateNowPlaying — these tracks are already finished, not currently playing.
+        logger.info(`♫ Scrobbled (history): ${newTrack.artist} - ${newTrack.title}`);
         const timestamp = Math.floor(new Date(newTrack.playedAt).getTime() / 1000);
         try {
           await this.lastfm.scrobble(newTrack, timestamp);
@@ -159,14 +158,15 @@ export class Scrobbler {
         } catch (err) {
           logger.error("Failed to scrobble:", (err as Error).message);
         }
-      }
-
-      // Update Now Playing on Last.fm
-      try {
-        await this.lastfm.updateNowPlaying(newTrack);
-        this.state.nowPlayingUpdated = true;
-      } catch (err) {
-        logger.error("Failed to update Now Playing:", (err as Error).message);
+      } else {
+        // Queue-based track: this is actually playing right now
+        logger.info(`♫ Now playing (queue): ${newTrack.artist} - ${newTrack.title}`);
+        try {
+          await this.lastfm.updateNowPlaying(newTrack);
+          this.state.nowPlayingUpdated = true;
+        } catch (err) {
+          logger.error("Failed to update Now Playing:", (err as Error).message);
+        }
       }
     } else {
       logger.debug("No track currently playing");
