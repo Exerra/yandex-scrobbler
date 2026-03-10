@@ -1,0 +1,288 @@
+import { randomUUID } from "crypto";
+import { logger } from "./logger";
+import type {
+  YandexQueueItem,
+  YandexQueueListResponse,
+  YandexQueueResponse,
+  YandexTrack,
+  YandexTrackResponse,
+  YandexAccountStatusResponse,
+  YandexContext,
+  YandexContextsResponse,
+  TrackInfo,
+} from "./types";
+
+const YANDEX_API_BASE = "https://api.music.yandex.net";
+
+/**
+ * Find the most recently played track across all contexts by parsing timestamps
+ * as Date objects. String comparison of ISO 8601 timestamps with different timezone
+ * offsets (e.g. "+03:00" vs "+00:00") is incorrect; Date.parse handles this properly.
+ */
+export function findLatestTrackFromContexts(
+  contexts: YandexContext[]
+): { trackId: number; albumId?: number; timestamp: string } | null {
+  let latestTime = 0;
+  let result: { trackId: number; albumId?: number; timestamp: string } | null = null;
+
+  for (const ctx of contexts) {
+    for (const t of ctx.tracks) {
+      const trackTime = new Date(t.timestamp).getTime();
+      if (Number.isNaN(trackTime)) continue;
+      if (trackTime > latestTime) {
+        latestTime = trackTime;
+        result = {
+          trackId: t.trackId.id,
+          albumId: t.trackId.albumId,
+          timestamp: t.timestamp,
+        };
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Sort queue items by their `modified` timestamp, newest first.
+ * Uses Date parsing for correct chronological ordering across timezone offsets.
+ */
+export function sortQueuesByModified(queues: YandexQueueItem[]): YandexQueueItem[] {
+  return [...queues].sort((a, b) => {
+    const ta = new Date(a.modified).getTime();
+    const tb = new Date(b.modified).getTime();
+    return tb - ta;
+  });
+}
+
+/**
+ * Yandex Music API client.
+ * Uses the unofficial API to fetch the user's play queue and track metadata.
+ */
+export class YandexMusicClient {
+  private token: string;
+  private deviceHeader: string;
+  private uid: number | null = null;
+
+  constructor(token: string) {
+    this.token = token;
+    // The X-Yandex-Music-Device header is required for queue endpoints.
+    // Use random UUIDs for device_id and uuid so the API treats this as a
+    // real device — hardcoded "unknown" values caused the queue endpoint
+    // to return only queues created by this fake device (i.e. none).
+    const deviceId = randomUUID();
+    const uuid = randomUUID();
+    this.deviceHeader =
+      `os=Linux; os_version=1; manufacturer=Scrobbler; ` +
+      `model=Yandex-Scrobbler; clid=; device_id=${deviceId}; uuid=${uuid}`;
+  }
+
+  private headers(): Record<string, string> {
+    return {
+      Authorization: `OAuth ${this.token}`,
+      "X-Yandex-Music-Device": this.deviceHeader,
+      Accept: "application/json",
+    };
+  }
+
+  /**
+   * Fetch the user's UID from the account status endpoint.
+   * Caches the result after first call.
+   */
+  async getAccountUid(): Promise<number> {
+    if (this.uid !== null) return this.uid;
+
+    const url = `${YANDEX_API_BASE}/account/status`;
+    const res = await fetch(url, { headers: this.headers() });
+
+    if (!res.ok) {
+      throw new Error(`Yandex API /account/status returned ${res.status}: ${await res.text()}`);
+    }
+
+    const data = (await res.json()) as YandexAccountStatusResponse;
+    this.uid = data.result.account.uid;
+    logger.info(`Authenticated as Yandex user: ${data.result.account.displayName || data.result.account.login} (uid: ${this.uid})`);
+    return this.uid;
+  }
+
+  /**
+   * List all queues for the current user.
+   */
+  async getQueues(): Promise<YandexQueueItem[]> {
+    const url = `${YANDEX_API_BASE}/queues`;
+    const res = await fetch(url, { headers: this.headers() });
+
+    if (!res.ok) {
+      throw new Error(`Yandex API /queues returned ${res.status}: ${await res.text()}`);
+    }
+
+    const data = (await res.json()) as YandexQueueListResponse;
+    return data.result?.queues ?? [];
+  }
+
+  /**
+   * Get a specific queue by ID, containing tracks and current index.
+   */
+  async getQueue(queueId: string): Promise<YandexQueueResponse["result"] | null> {
+    const url = `${YANDEX_API_BASE}/queues/${queueId}`;
+    const res = await fetch(url, { headers: this.headers() });
+
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(`Yandex API /queues/${queueId} returned ${res.status}: ${await res.text()}`);
+    }
+
+    const data = (await res.json()) as YandexQueueResponse;
+    return data.result;
+  }
+
+  /**
+   * Fetch track metadata by track ID.
+   */
+  async getTrack(trackId: number | string): Promise<YandexTrack | null> {
+    const url = `${YANDEX_API_BASE}/tracks/${trackId}`;
+    const res = await fetch(url, { headers: this.headers() });
+
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(`Yandex API /tracks/${trackId} returned ${res.status}: ${await res.text()}`);
+    }
+
+    const data = (await res.json()) as YandexTrackResponse;
+    return data.result?.[0] ?? null;
+  }
+
+  /**
+   * Get recently played tracks from the contexts ("recently listened") endpoint.
+   * Returns the most recently played track with its timestamp.
+   */
+  async getRecentlyPlayed(): Promise<TrackInfo | null> {
+    try {
+      const uid = await this.getAccountUid();
+      // Don't filter by types — different listening modes (album, track page,
+      // search, collection, radio, etc.) create different context types.
+      // Filtering to specific types caused tracks to be missed entirely.
+      const url = `${YANDEX_API_BASE}/users/${uid}/contexts?trackCount=1&contextCount=30`;
+      const res = await fetch(url, { headers: this.headers() });
+
+      if (!res.ok) {
+        logger.warn(`Yandex API /contexts returned ${res.status}`);
+        return null;
+      }
+
+      const data = (await res.json()) as YandexContextsResponse;
+      const contexts = data.result?.contexts ?? [];
+
+      if (contexts.length === 0) {
+        logger.debug("No recent play contexts found");
+        return null;
+      }
+
+      logger.debug(`Found ${contexts.length} contexts: ${contexts.map(c => `${c.context}(${c.contextItem})`).join(", ")}`);
+
+      // Find the track with the most recent timestamp across all contexts.
+      // Timestamps are parsed as Date objects to correctly handle different timezone offsets
+      // (string comparison of ISO 8601 timestamps with varying offsets gives wrong results).
+      const latest = findLatestTrackFromContexts(contexts);
+
+      const latestTimestamp = latest?.timestamp ?? "";
+      const latestTrackId = latest?.trackId ?? null;
+      const latestAlbumId = latest?.albumId;
+
+      if (latestTrackId === null) {
+        logger.debug("No tracks found in contexts");
+        return null;
+      }
+
+      const track = await this.getTrack(latestTrackId);
+      if (!track) {
+        logger.debug("Could not fetch track metadata for context track:", latestTrackId);
+        return null;
+      }
+
+      const artist = track.artists?.map((a) => a.name).join(", ") || "Unknown Artist";
+      const title = track.title || "Unknown Title";
+      const album = track.albums?.[0]?.title || "";
+      const durationMs = track.durationMs || 0;
+
+      return { artist, title, album, durationMs, playedAt: latestTimestamp };
+    } catch (err) {
+      logger.error("Error fetching recently played from Yandex Music:", (err as Error).message);
+      return null;
+    }
+  }
+
+  /**
+   * Get the currently playing track from the user's most recent queue.
+   * Returns null if no track is playing or the queue is empty.
+   */
+  async getCurrentTrackFromQueue(): Promise<TrackInfo | null> {
+    try {
+      const queues = await this.getQueues();
+
+      if (queues.length === 0) {
+        logger.debug("No queues found");
+        return null;
+      }
+
+      // Sort queues by modified timestamp (newest first) to ensure we
+      // pick the most recently active queue, regardless of API ordering.
+      const sorted = sortQueuesByModified(queues);
+
+      logger.debug(`Found ${sorted.length} queue(s), most recent modified: ${sorted[0]!.modified}`);
+
+      const latestQueue = sorted[0]!;
+      const queue = await this.getQueue(latestQueue.id);
+
+      if (!queue || !queue.tracks || queue.tracks.length === 0) {
+        logger.debug("Queue is empty or has no tracks");
+        return null;
+      }
+
+      const currentIndex = queue.currentIndex;
+      if (currentIndex < 0 || currentIndex >= queue.tracks.length) {
+        logger.debug("Current index out of bounds:", currentIndex);
+        return null;
+      }
+
+      const currentTrackId = queue.tracks[currentIndex]!;
+      const track = await this.getTrack(currentTrackId.trackId);
+
+      if (!track) {
+        logger.debug("Could not fetch track metadata for:", currentTrackId.trackId);
+        return null;
+      }
+
+      const artist = track.artists?.map((a) => a.name).join(", ") || "Unknown Artist";
+      const title = track.title || "Unknown Title";
+      const album = track.albums?.[0]?.title || "";
+      const durationMs = track.durationMs || 0;
+
+      return { artist, title, album, durationMs };
+    } catch (err) {
+      logger.error("Error fetching current track from queue:", (err as Error).message);
+      return null;
+    }
+  }
+
+  /**
+   * Get the current/recent track, trying queues first, then falling back to play history.
+   */
+  async getCurrentTrack(): Promise<TrackInfo | null> {
+    // Try the real-time queue first
+    const queueTrack = await this.getCurrentTrackFromQueue();
+    if (queueTrack) {
+      logger.debug("Track found via queue");
+      return queueTrack;
+    }
+
+    // Fall back to recently played history
+    const historyTrack = await this.getRecentlyPlayed();
+    if (historyTrack) {
+      logger.debug("Track found via play history");
+      return historyTrack;
+    }
+
+    return null;
+  }
+}
