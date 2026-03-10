@@ -65,11 +65,7 @@ export function isStaleHistoryTrack(
   const ageMs = now - playedAtTime;
 
   const STALE_BUFFER_MS = 10 * 60 * 1000; // 10 minutes
-  const MIN_STALE_AGE_MS = 10 * 60 * 1000; // minimum 10 minutes
-  const maxFreshAge = Math.max(
-    durationMs > 0 ? durationMs + STALE_BUFFER_MS : MIN_STALE_AGE_MS,
-    MIN_STALE_AGE_MS
-  );
+  const maxFreshAge = Math.max(durationMs + STALE_BUFFER_MS, STALE_BUFFER_MS);
 
   return ageMs > maxFreshAge;
 }
