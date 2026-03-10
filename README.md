@@ -1,6 +1,6 @@
 # Yandex Music → Last.fm Scrobbler
 
-![](https://share.exerra.xyz/MY4JYTc.jpg)
+![Project banner](./docs/yandex-scrobbler-banner.jpg)
 
 > **⚠️ Disclaimer:** This project was built entirely by AI and thrown together for personal use. It may have bugs, rough edges, or quirks. Use at your own discretion.
 
@@ -97,13 +97,6 @@ tmux attach -t scrobbler
 
 # Stop the scrobbler
 tmux kill-session -t scrobbler
-```
-
-To have it start automatically on login, add the command to your shell profile (e.g. `~/.bashrc` or `~/.zshrc`):
-
-```bash
-# Start scrobbler in tmux if not already running
-tmux has-session -t scrobbler 2>/dev/null || tmux new-session -d -s scrobbler -c /path/to/yandex-scrobbler 'bun run start'
 ```
 
 ### Using Docker
