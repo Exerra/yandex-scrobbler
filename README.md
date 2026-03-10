@@ -1,5 +1,7 @@
 # Yandex Music → Last.fm Scrobbler
 
+![](https://share.exerra.xyz/MY4JYTc.jpg)
+
 > **⚠️ Disclaimer:** This project was built entirely by AI and thrown together for personal use. It may have bugs, rough edges, or quirks. Use at your own discretion.
 
 A 24/7 running scrobbler that tracks what you listen to on Yandex Music and scrobbles it to your Last.fm profile. Built with [Bun](https://bun.sh) and TypeScript.
