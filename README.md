@@ -148,10 +148,10 @@ sudo systemctl start yandex-scrobbler
 1. The scrobbler polls the Yandex Music API every 15 seconds (configurable)
 2. It uses two detection methods:
    - **Queue-based** (primary): Checks your active play queue for real-time "now playing" detection. **Note:** this detection method is largely unverified — the queue API is device-specific and frequently returns no results, so it may not reliably detect playback in all situations.
-   - **History-based** (fallback): Uses the "recently played" contexts endpoint to detect tracks when no active queue exists — covers albums, artists, playlists, and radio listening
+   - **History-based** (fallback): Uses the "recently played" contexts endpoint to detect tracks when no active queue exists — covers albums, artists, playlists, and radio listening. **Note:** because this endpoint is a history log rather than a real-time stream, it cannot determine how long you actually listened to each track. As a result, **every track that appears in the history is scrobbled regardless of how much of it you listened to** (even if you only played a few seconds). This is a known limitation of the history-based approach.
 3. When a new track is detected, it updates your Last.fm "Now Playing" status
 4. For queue-based detection: a track is scrobbled when listened to for at least half its duration or 4 minutes (whichever comes first), with a minimum of 30 seconds — following [Last.fm's scrobbling rules](https://www.last.fm/api/scrobbling)
-5. For history-based detection: tracks are scrobbled immediately when detected as new plays (using timestamps to avoid duplicates)
+5. For history-based detection: tracks are scrobbled immediately when detected as new plays (using timestamps to avoid duplicates), with no minimum listen-time requirement
 
 ## Testing
 
