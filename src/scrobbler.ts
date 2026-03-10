@@ -87,15 +87,14 @@ export class Scrobbler {
       if (!isSameTrack(currentTrack, this.state.lastTrack)) {
         // Track changed — handle the transition
         await this.handleTrackChange(currentTrack);
-      } else if (currentTrack && !this.state.scrobbled) {
-        // Same track still playing — check if we should scrobble it now
+      } else if (currentTrack && !this.state.scrobbled && !currentTrack.playedAt) {
+        // Same queue-based track still playing — check if we should scrobble it now.
+        // History-based tracks (with playedAt) are already finished playing;
+        // we wait for a successor track to confirm they were actually listened to.
         const elapsed = Date.now() - this.state.lastTrackStartTime;
         if (shouldScrobble(currentTrack.durationMs, elapsed)) {
           try {
-            const timestamp = currentTrack.playedAt
-              ? Math.floor(new Date(currentTrack.playedAt).getTime() / 1000)
-              : Math.floor(this.state.lastTrackStartTime / 1000);
-            await this.lastfm.scrobble(currentTrack, timestamp);
+            await this.lastfm.scrobble(currentTrack, Math.floor(this.state.lastTrackStartTime / 1000));
             this.state.scrobbled = true;
           } catch (err) {
             logger.error("Failed to scrobble:", (err as Error).message);
@@ -112,25 +111,46 @@ export class Scrobbler {
     const prevStartTime = this.state.lastTrackStartTime;
 
     // Scrobble the previous track if it hasn't been scrobbled yet
-    // Apply elapsed-time rules for all tracks (both queue and history-based).
-    // The /contexts endpoint returns all recently touched tracks including skipped ones,
-    // so we must verify sufficient play time before scrobbling.
     if (prevTrack && !this.state.scrobbled) {
-      const elapsed = Date.now() - prevStartTime;
-      if (shouldScrobble(prevTrack.durationMs, elapsed)) {
-        const timestamp = prevTrack.playedAt
-          ? Math.floor(new Date(prevTrack.playedAt).getTime() / 1000)
-          : Math.floor(prevStartTime / 1000);
-        try {
-          await this.lastfm.scrobble(prevTrack, timestamp);
-        } catch (err) {
-          logger.error("Failed to scrobble previous track:", (err as Error).message);
+      if (prevTrack.playedAt) {
+        // History-based track: use the time gap between this track's playedAt
+        // and the next track's playedAt to determine if it was actually played.
+        // The /contexts endpoint returns all recently touched tracks including
+        // skipped ones, so we compare timestamps to filter out short plays.
+        const prevTime = new Date(prevTrack.playedAt).getTime();
+        const nextTime = newTrack?.playedAt
+          ? new Date(newTrack.playedAt).getTime()
+          : Date.now();
+        const gap = nextTime - prevTime;
+
+        if (gap > 0 && shouldScrobble(prevTrack.durationMs, gap)) {
+          const timestamp = Math.floor(prevTime / 1000);
+          try {
+            await this.lastfm.scrobble(prevTrack, timestamp);
+          } catch (err) {
+            logger.error("Failed to scrobble previous track:", (err as Error).message);
+          }
+        } else {
+          logger.debug(
+            `Skipped scrobble for "${prevTrack.artist} - ${prevTrack.title}" ` +
+              `(history gap ${Math.round(Math.max(0, gap) / 1000)}s)`
+          );
         }
       } else {
-        logger.debug(
-          `Skipped scrobble for "${prevTrack.artist} - ${prevTrack.title}" ` +
-            `(played ${Math.round(elapsed / 1000)}s)`
-        );
+        // Queue-based track: use elapsed wall-clock time since detection
+        const elapsed = Date.now() - prevStartTime;
+        if (shouldScrobble(prevTrack.durationMs, elapsed)) {
+          try {
+            await this.lastfm.scrobble(prevTrack, Math.floor(prevStartTime / 1000));
+          } catch (err) {
+            logger.error("Failed to scrobble previous track:", (err as Error).message);
+          }
+        } else {
+          logger.debug(
+            `Skipped scrobble for "${prevTrack.artist} - ${prevTrack.title}" ` +
+              `(played ${Math.round(elapsed / 1000)}s)`
+          );
+        }
       }
     }
 
@@ -144,8 +164,8 @@ export class Scrobbler {
       if (newTrack.playedAt) {
         // History-based track: don't scrobble immediately.
         // The /contexts endpoint returns all recently touched tracks including skipped ones.
-        // Wait for the shouldScrobble elapsed-time threshold via the polling cycle
-        // to confirm the user actually listened to this track.
+        // We wait for a successor track and use the timestamp gap to determine
+        // if this track was actually listened to (see handleTrackChange).
         logger.info(`♫ Detected (history): ${newTrack.artist} - ${newTrack.title}`);
       } else {
         // Queue-based track: this is actually playing right now

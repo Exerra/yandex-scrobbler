@@ -105,3 +105,62 @@ describe("shouldScrobble", () => {
     expect(shouldScrobble(40000, 30000)).toBe(true);  // 30s >= 30s minimum
   });
 });
+
+describe("shouldScrobble with history timestamp gaps", () => {
+  // These tests validate the logic used in handleTrackChange for history-based
+  // tracks, where the "elapsed" time is derived from the gap between consecutive
+  // playedAt timestamps rather than wall-clock time.
+
+  test("skipped track has small timestamp gap and is not scrobbled", () => {
+    // Track is 200s, but user skipped after ~10s (gap between playedAt timestamps)
+    const trackDurationMs = 200_000;
+    const prevPlayedAt = new Date("2026-03-09T15:00:00+00:00").getTime();
+    const nextPlayedAt = new Date("2026-03-09T15:00:10+00:00").getTime();
+    const gap = nextPlayedAt - prevPlayedAt; // 10s
+    expect(shouldScrobble(trackDurationMs, gap)).toBe(false);
+  });
+
+  test("fully played track has large timestamp gap and is scrobbled", () => {
+    // Track is 200s, user listened fully (gap ≈ 200s)
+    const trackDurationMs = 200_000;
+    const prevPlayedAt = new Date("2026-03-09T15:00:00+00:00").getTime();
+    const nextPlayedAt = new Date("2026-03-09T15:03:20+00:00").getTime();
+    const gap = nextPlayedAt - prevPlayedAt; // 200s
+    expect(shouldScrobble(trackDurationMs, gap)).toBe(true);
+  });
+
+  test("track played past half duration is scrobbled", () => {
+    // Track is 200s, half is 100s. User listened ~110s before skipping.
+    const trackDurationMs = 200_000;
+    const prevPlayedAt = new Date("2026-03-09T15:00:00+00:00").getTime();
+    const nextPlayedAt = new Date("2026-03-09T15:01:50+00:00").getTime();
+    const gap = nextPlayedAt - prevPlayedAt; // 110s > 100s (half)
+    expect(shouldScrobble(trackDurationMs, gap)).toBe(true);
+  });
+
+  test("track played less than half duration is not scrobbled", () => {
+    // Track is 200s, half is 100s. User listened ~90s.
+    const trackDurationMs = 200_000;
+    const prevPlayedAt = new Date("2026-03-09T15:00:00+00:00").getTime();
+    const nextPlayedAt = new Date("2026-03-09T15:01:30+00:00").getTime();
+    const gap = nextPlayedAt - prevPlayedAt; // 90s < 100s (half)
+    expect(shouldScrobble(trackDurationMs, gap)).toBe(false);
+  });
+
+  test("short track skipped quickly is not scrobbled", () => {
+    // Track is 60s, user skipped after ~5s
+    const trackDurationMs = 60_000;
+    const prevPlayedAt = new Date("2026-03-09T15:00:00+00:00").getTime();
+    const nextPlayedAt = new Date("2026-03-09T15:00:05+00:00").getTime();
+    const gap = nextPlayedAt - prevPlayedAt; // 5s
+    expect(shouldScrobble(trackDurationMs, gap)).toBe(false);
+  });
+
+  test("negative gap (clock issue) is not scrobbled", () => {
+    // Edge case: next track has earlier timestamp (shouldn't happen but be safe)
+    const trackDurationMs = 200_000;
+    const gap = -5000;
+    // gap < 0 means shouldScrobble gets negative elapsed → returns false
+    expect(shouldScrobble(trackDurationMs, gap)).toBe(false);
+  });
+});
