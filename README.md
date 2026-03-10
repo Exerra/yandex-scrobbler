@@ -1,5 +1,7 @@
 # Yandex Music → Last.fm Scrobbler
 
+> **⚠️ Disclaimer:** This project was built entirely by AI and thrown together for personal use. It may have bugs, rough edges, or quirks. Use at your own discretion.
+
 A 24/7 running scrobbler that tracks what you listen to on Yandex Music and scrobbles it to your Last.fm profile. Built with [Bun](https://bun.sh) and TypeScript.
 
 ## Features
@@ -74,6 +76,50 @@ bun run start
 
 ## Running 24/7
 
+### Using tmux
+
+The simplest approach for keeping the scrobbler running in the background:
+
+```bash
+tmux new-session -d -s scrobbler 'bun run start'
+```
+
+To view the logs or manage the session:
+
+```bash
+# Attach to the session
+tmux attach -t scrobbler
+
+# Detach (while inside the session)
+# Press Ctrl+B, then D
+
+# Stop the scrobbler
+tmux kill-session -t scrobbler
+```
+
+To have it start automatically on login, add the command to your shell profile (e.g. `~/.bashrc` or `~/.zshrc`):
+
+```bash
+# Start scrobbler in tmux if not already running
+tmux has-session -t scrobbler 2>/dev/null || tmux new-session -d -s scrobbler -c /path/to/yandex-scrobbler 'bun run start'
+```
+
+### Using Docker
+
+```dockerfile
+FROM oven/bun:1-alpine
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+COPY . .
+CMD ["bun", "run", "start"]
+```
+
+```bash
+docker build -t yandex-scrobbler .
+docker run -d --env-file .env --restart unless-stopped --name yandex-scrobbler yandex-scrobbler
+```
+
 ### Using systemd (Linux)
 
 Create a service file at `/etc/systemd/system/yandex-scrobbler.service`:
@@ -102,35 +148,11 @@ sudo systemctl enable yandex-scrobbler
 sudo systemctl start yandex-scrobbler
 ```
 
-### Using Docker
-
-```dockerfile
-FROM oven/bun:1-alpine
-WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production
-COPY . .
-CMD ["bun", "run", "start"]
-```
-
-```bash
-docker build -t yandex-scrobbler .
-docker run -d --env-file .env --restart unless-stopped --name yandex-scrobbler yandex-scrobbler
-```
-
-### Using PM2
-
-```bash
-bunx pm2 start index.ts --interpreter bun --name yandex-scrobbler
-bunx pm2 save
-bunx pm2 startup
-```
-
 ## How It Works
 
 1. The scrobbler polls the Yandex Music API every 15 seconds (configurable)
 2. It uses two detection methods:
-   - **Queue-based** (primary): Checks your active play queue for real-time "now playing" detection
+   - **Queue-based** (primary): Checks your active play queue for real-time "now playing" detection. **Note:** this detection method is largely unverified — the queue API is device-specific and frequently returns no results, so it may not reliably detect playback in all situations.
    - **History-based** (fallback): Uses the "recently played" contexts endpoint to detect tracks when no active queue exists — covers albums, artists, playlists, and radio listening
 3. When a new track is detected, it updates your Last.fm "Now Playing" status
 4. For queue-based detection: a track is scrobbled when listened to for at least half its duration or 4 minutes (whichever comes first), with a minimum of 30 seconds — following [Last.fm's scrobbling rules](https://www.last.fm/api/scrobbling)
