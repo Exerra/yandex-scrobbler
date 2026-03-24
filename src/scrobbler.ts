@@ -42,6 +42,34 @@ export function shouldScrobble(
   return elapsedMs >= Math.min(halfDuration, FOUR_MINUTES_MS);
 }
 
+/**
+ * Determines if a history track (from /contexts) is "stale" — i.e., from a
+ * previous listening session rather than the current one.
+ *
+ * The /contexts endpoint returns all recently-listened contexts, which can span
+ * days or weeks. When the scrobbler starts (or after a long pause), the latest
+ * context track may be from a completely different session. We must not scrobble
+ * those stale tracks when a fresh track eventually appears as their successor.
+ *
+ * A track is stale if its playedAt timestamp is older than its duration + a
+ * generous buffer from the reference time (defaults to now).
+ */
+export function isStaleHistoryTrack(
+  playedAt: string,
+  durationMs: number,
+  now: number = Date.now()
+): boolean {
+  const playedAtTime = new Date(playedAt).getTime();
+  if (Number.isNaN(playedAtTime)) return true; // invalid timestamp → treat as stale
+
+  const ageMs = now - playedAtTime;
+
+  const STALE_BUFFER_MS = 10 * 60 * 1000; // 10 minutes
+  const maxFreshAge = Math.max(durationMs + STALE_BUFFER_MS, STALE_BUFFER_MS);
+
+  return ageMs > maxFreshAge;
+}
+
 export interface ScrobblerState {
   lastTrack: TrackInfo | null;
   lastTrackStartTime: number;
@@ -87,18 +115,17 @@ export class Scrobbler {
       if (!isSameTrack(currentTrack, this.state.lastTrack)) {
         // Track changed — handle the transition
         await this.handleTrackChange(currentTrack);
-      } else if (currentTrack && !this.state.scrobbled) {
-        // Same track still playing — check if we should scrobble it now
-        // Only do elapsed-time scrobbling for queue-based detection (no playedAt)
-        if (!currentTrack.playedAt) {
-          const elapsed = Date.now() - this.state.lastTrackStartTime;
-          if (shouldScrobble(currentTrack.durationMs, elapsed)) {
-            try {
-              await this.lastfm.scrobble(currentTrack, Math.floor(this.state.lastTrackStartTime / 1000));
-              this.state.scrobbled = true;
-            } catch (err) {
-              logger.error("Failed to scrobble:", (err as Error).message);
-            }
+      } else if (currentTrack && !this.state.scrobbled && !currentTrack.playedAt) {
+        // Same queue-based track still playing — check if we should scrobble it now.
+        // History-based tracks (with playedAt) are already finished playing;
+        // we wait for a successor track to confirm they were actually listened to.
+        const elapsed = Date.now() - this.state.lastTrackStartTime;
+        if (shouldScrobble(currentTrack.durationMs, elapsed)) {
+          try {
+            await this.lastfm.scrobble(currentTrack, Math.floor(this.state.lastTrackStartTime / 1000));
+            this.state.scrobbled = true;
+          } catch (err) {
+            logger.error("Failed to scrobble:", (err as Error).message);
           }
         }
       }
@@ -112,10 +139,14 @@ export class Scrobbler {
     const prevStartTime = this.state.lastTrackStartTime;
 
     // Scrobble the previous track if it hasn't been scrobbled yet
-    // For queue-based tracks, check elapsed time; for history-based, always scrobble
     if (prevTrack && !this.state.scrobbled) {
       if (prevTrack.playedAt) {
-        // History-based track: the play is already completed, scrobble it
+        // History-based track: the /contexts endpoint's timestamps for radio
+        // tracks are unreliable for determining play duration (gaps of seconds
+        // between tracks that were fully played). Instead, trust that a track
+        // appearing in the current session's history was actually played.
+        // Stale tracks (from old sessions) were already marked as scrobbled
+        // on detection and won't reach here.
         const timestamp = Math.floor(new Date(prevTrack.playedAt).getTime() / 1000);
         try {
           await this.lastfm.scrobble(prevTrack, timestamp);
@@ -123,7 +154,7 @@ export class Scrobbler {
           logger.error("Failed to scrobble previous track:", (err as Error).message);
         }
       } else {
-        // Queue-based track: check elapsed time
+        // Queue-based track: use elapsed wall-clock time since detection
         const elapsed = Date.now() - prevStartTime;
         if (shouldScrobble(prevTrack.durationMs, elapsed)) {
           try {
@@ -148,15 +179,18 @@ export class Scrobbler {
 
     if (newTrack) {
       if (newTrack.playedAt) {
-        // History-based track: scrobble immediately since it represents a completed play.
-        // Do NOT call updateNowPlaying — these tracks are already finished, not currently playing.
-        logger.info(`♫ Scrobbled (history): ${newTrack.artist} - ${newTrack.title}`);
-        const timestamp = Math.floor(new Date(newTrack.playedAt).getTime() / 1000);
-        try {
-          await this.lastfm.scrobble(newTrack, timestamp);
+        // History-based track from /contexts.
+        // Check if the track is stale (from a previous listening session).
+        // If so, mark it as already scrobbled so it won't be scrobbled when
+        // a successor appears.
+        if (isStaleHistoryTrack(newTrack.playedAt, newTrack.durationMs)) {
           this.state.scrobbled = true;
-        } catch (err) {
-          logger.error("Failed to scrobble:", (err as Error).message);
+          logger.debug(
+            `Ignoring stale history track: ${newTrack.artist} - ${newTrack.title} ` +
+              `(playedAt: ${newTrack.playedAt})`
+          );
+        } else {
+          logger.info(`♫ Detected (history): ${newTrack.artist} - ${newTrack.title}`);
         }
       } else {
         // Queue-based track: this is actually playing right now
